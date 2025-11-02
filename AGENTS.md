@@ -64,7 +64,10 @@
     * https://github.com/ag-ui-protocol/ag-ui/tree/main/integrations/langgraph/python
         * human in the loopは以下を参考
             * https://github.com/ag-ui-protocol/ag-ui/blob/main/integrations/langgraph/python/examples/agents/human_in_the_loop/agent.py
-
+* 環境変数はfastapiのSettingクラスを使って管理し、.env.exampleを作成する
+* pythonの構築はuvを使って行う
+* フォルダ階層は深くせず、シンプルな構成とする
+* 
 
 # Build
 npm run dev
