@@ -1,0 +1,22 @@
+[project]
+name = "novel-analyzer-backend"
+version = "0.1.0"
+description = "Backend service for the novel analysis demo"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn>=0.32.0",
+  "langgraph>=1.0.2",
+  "langchain-openai>=0.2.1",
+  "python-dotenv>=1.0.1",
+  "ag-ui>=0.0.13",
+  "pydantic-settings>=2.6.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
