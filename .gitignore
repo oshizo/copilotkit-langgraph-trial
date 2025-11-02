@@ -214,3 +214,8 @@ frontend/.vite/
 frontend/.parcel-cache/
 
 */analysis_outputs/
+
+# frontend/src/lib は追跡対象に戻す
+!frontend/src/lib/
+# さらにその中の utils.ts も確実に追跡する
+!frontend/src/lib/utils.ts
