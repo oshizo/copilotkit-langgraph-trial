@@ -219,3 +219,5 @@ frontend/.parcel-cache/
 !frontend/src/lib/
 # さらにその中の utils.ts も確実に追跡する
 !frontend/src/lib/utils.ts
+
+backend/project_data/

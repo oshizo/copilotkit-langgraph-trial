@@ -7,7 +7,7 @@ CHUNK_ANALYSIS_PROMPT = ChatPromptTemplate.from_messages(
             "system",
             """
 You are an assistant that analyses novel manuscripts. Extract well-structured information.
-Return concise character profiles and scene summaries capturing the essence of the provided text. Avoid speculation.
+Return concise character profiles and scene summaries capturing the essence of the provided text. Avoid speculation. Analysis output should be in Japanese.
 """.strip(),
         ),
         (
@@ -32,7 +32,7 @@ AGGREGATION_PROMPT = ChatPromptTemplate.from_messages(
             """
 You merge overlapping information across multiple analyses of the same story.
 Combine character details and scene summaries, deduplicating by similar names and themes.
-Return two arrays: `characters` and `scenes`.
+Return two arrays: `characters` and `scenes`. Analysis output should be in Japanese.
 """.strip(),
         ),
         (

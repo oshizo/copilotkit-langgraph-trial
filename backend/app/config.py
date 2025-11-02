@@ -11,9 +11,11 @@ class Settings(BaseSettings):
     openai_api_key: str
     project_text_dir: Path
     analysis_output_dir: Path
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-5-nano"
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", env_prefix="", case_sensitive=False)
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", env_prefix="", case_sensitive=False
+    )
 
     @property
     def resolved_project_dir(self) -> Path:
