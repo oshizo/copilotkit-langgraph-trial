@@ -4,7 +4,6 @@ import json
 from datetime import datetime
 from typing import Any, Dict, Iterable, List
 
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.constants import START, END
@@ -25,12 +24,17 @@ from .text_loader import build_chunks, read_text_files
 
 
 def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
-    llm = ChatOpenAI(model=settings.openai_model, temperature=0, api_key=settings.openai_api_key)
-    parser = JsonOutputParser(pydantic_object=_ChunkAnalysisModel)
-    aggregation_parser = JsonOutputParser(pydantic_object=_AggregatedModel)
+    llm = ChatOpenAI(
+        model=settings.openai_model, temperature=0, api_key=settings.openai_api_key
+    )
 
-    chunk_chain = CHUNK_ANALYSIS_PROMPT | llm | parser
-    aggregation_chain = AGGREGATION_PROMPT | llm | aggregation_parser
+    # OpenAI structured output で Pydantic モデルを直接返す
+    chunk_chain = CHUNK_ANALYSIS_PROMPT | llm.with_structured_output(
+        _ChunkAnalysisModel
+    )
+    aggregation_chain = AGGREGATION_PROMPT | llm.with_structured_output(
+        _AggregatedModel
+    )
 
     builder: StateGraph[AnalysisState] = StateGraph(AnalysisState)
 
@@ -120,8 +124,13 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
         aggregated = state.get("aggregated")
         if not aggregated:
             return {}
-        output_path = settings.resolved_output_dir / f"analysis-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
-        output_path.write_text(json.dumps(aggregated, ensure_ascii=False, indent=2), encoding="utf-8")
+        output_path = (
+            settings.resolved_output_dir
+            / f"analysis-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
+        )
+        output_path.write_text(
+            json.dumps(aggregated, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         return {"output_path": str(output_path)}
 
     builder.add_node("load_files", load_files)
@@ -146,7 +155,7 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
     return builder.compile(checkpointer=MemorySaver())
 
 
-# Pydantic models used by LangChain parsers
+# Pydantic models used by LangChain structured output
 from pydantic import BaseModel, Field
 
 

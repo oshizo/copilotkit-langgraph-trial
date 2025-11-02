@@ -212,3 +212,5 @@ node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/.parcel-cache/
+
+*/analysis_outputs/

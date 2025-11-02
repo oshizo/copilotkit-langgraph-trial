@@ -128,7 +128,7 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
     if (typeof rawValue === "string") {
       try {
         parsed = JSON.parse(rawValue);
-      } catch (error) {
+      } catch {
         parsed = rawValue;
       }
     }
@@ -174,9 +174,8 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
       }
       case EventType.MESSAGES_SNAPSHOT: {
         const snapshotEvent = event as MessagesSnapshotEvent;
-        const assistantMessages = snapshotEvent.messages
-          ?.filter((msg) => msg.role === "assistant")
-          .map((msg) => msg.content ?? "") ?? [];
+        const assistantMessages =
+          snapshotEvent.messages?.filter((msg) => msg.role === "assistant").map((msg) => msg.content ?? "") ?? [];
         setState((prev) => ({ ...prev, messages: assistantMessages }));
         break;
       }
@@ -224,8 +223,11 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
       threadId,
       runId,
       messages: [],
-      forwardedProps: {}
-    });
+      forwardedProps: {},
+      state: {},
+      tools: [],
+      context: [] // ← ここを配列に
+    } as any);
     subscribeToEvents(observable);
   }, [ensureAgent, resetForRun, subscribeToEvents]);
 
@@ -244,8 +246,11 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
           }
         }
       },
-      messages: []
-    });
+      messages: [],
+      state: {},
+      tools: [],
+      context: [] // ← 同様に配列
+    } as any);
     subscribeToEvents(observable);
   }, [ensureAgent, state.threadId, subscribeToEvents]);
 
