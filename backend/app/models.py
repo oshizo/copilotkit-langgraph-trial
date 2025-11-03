@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import operator
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Annotated, List, Optional, Sequence, TypedDict
+from typing import Annotated, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -23,29 +22,29 @@ class SceneSummary(TypedDict):
 class ChunkAnalysis(TypedDict):
     chunk_id: str
     source_path: str
-    characters: List[CharacterProfile]
-    scenes: List[SceneSummary]
+    characters: list[CharacterProfile]
+    scenes: list[SceneSummary]
 
 
 class AnalysisResult(TypedDict):
-    characters: List[CharacterProfile]
-    scenes: List[SceneSummary]
+    characters: list[CharacterProfile]
+    scenes: list[SceneSummary]
     generated_at: str
 
 
 class AnalysisState(TypedDict, total=False):
     """LangGraph state shared by all nodes."""
 
-    messages: Annotated[List[BaseMessage], add_messages]
+    messages: Annotated[list[BaseMessage], add_messages]
     tools: list
-    chunk_inputs: List["ChunkPayload"]
+    chunk_inputs: list[ChunkPayload]
     expected_chunks: int
-    chunk_results: Annotated[List[ChunkAnalysis], operator.add]
-    approval: Optional[dict]
-    aggregated: Optional[AnalysisResult]
-    output_path: Optional[str]
-    characters: List[CharacterProfile]
-    scenes: List[SceneSummary]
+    chunk_results: Annotated[list[ChunkAnalysis], operator.add]
+    approval: dict | None
+    aggregated: AnalysisResult | None
+    output_path: str | None
+    characters: list[CharacterProfile]
+    scenes: list[SceneSummary]
 
 
 @dataclass
@@ -69,7 +68,7 @@ class ApprovalRequest(TypedDict):
     type: str
     chunk_count: int
     total_characters: int
-    files: List[str]
+    files: list[str]
 
 
 class ApprovalResponse(TypedDict, total=False):

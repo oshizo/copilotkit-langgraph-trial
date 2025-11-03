@@ -21,7 +21,12 @@ export interface ApprovalPrompt {
   files: string[];
 }
 
-export type AgentStatus = "idle" | "running" | "awaiting-approval" | "completed" | "error";
+export type AgentStatus =
+  | "idle"
+  | "running"
+  | "awaiting-approval"
+  | "completed"
+  | "error";
 
 export interface StepProgress {
   name: string;
