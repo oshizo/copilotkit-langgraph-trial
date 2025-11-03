@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import { AnalysisApprovalDialog } from "./components/analysis/AnalysisApprovalDialog";
 import { AnalysisHeader } from "./components/analysis/AnalysisHeader";
 import { CharactersSection } from "./components/analysis/CharactersSection";
-import { MessagesPanel } from "./components/analysis/MessagesPanel";
 import { ProgressPanel } from "./components/analysis/ProgressPanel";
 import { ScenesSection } from "./components/analysis/ScenesSection";
 import { useAgentRunner } from "./hooks/useAgentRunner";
@@ -45,20 +44,20 @@ export default function App() {
           disabled={busy}
         />
 
-        <section className="grid gap-6 md:grid-cols-2">
+        {/* 進捗のみを上段にフル幅で表示 */}
+        <section>
           <ProgressPanel steps={state.steps} />
-          <MessagesPanel messages={state.messages} />
         </section>
 
+        {/* 結果（キャラクター） */}
         <section className="space-y-4">
           <div>
-            <h2 className="text-2xl font-semibold tracking-tight">
-              キャラクター
-            </h2>
+            <h2 className="text-2xl font-semibold tracking-tight">キャラクター</h2>
           </div>
           <CharactersSection result={state.result} />
         </section>
 
+        {/* 結果（シーン） */}
         <section className="space-y-4">
           <div>
             <h2 className="text-2xl font-semibold tracking-tight">シーン</h2>
