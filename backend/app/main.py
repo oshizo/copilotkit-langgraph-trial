@@ -1,11 +1,9 @@
+from ag_ui_langgraph import add_langgraph_fastapi_endpoint
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from ag_ui_langgraph import add_langgraph_fastapi_endpoint
-
 from .agent import create_agent
 from .config import get_settings
-
 
 settings = get_settings()
 app = FastAPI(title="Novel Analyzer API")

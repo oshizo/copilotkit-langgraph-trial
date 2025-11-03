@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Dict, Iterable, List
+from typing import Any
 
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.constants import START, END
+from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 from langgraph.types import Send, interrupt
+from pydantic import BaseModel, Field
 
 from .config import Settings
 from .models import (
@@ -73,7 +75,7 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
         chunk_inputs = state.get("chunk_inputs", [])
         if not chunk_inputs:
             return ["aggregate_results"]
-        sends: List[Any] = [
+        sends: list[Any] = [
             Send(
                 "analyze_chunk",
                 {
@@ -155,10 +157,6 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
     return builder.compile(checkpointer=MemorySaver())
 
 
-# Pydantic models used by LangChain structured output
-from pydantic import BaseModel, Field
-
-
 class _CharacterModel(BaseModel):
     name: str = Field(..., description="Character name")
     description: str = Field(..., description="Short profile")
@@ -170,10 +168,10 @@ class _SceneModel(BaseModel):
 
 
 class _ChunkAnalysisModel(BaseModel):
-    characters: List[_CharacterModel]
-    scenes: List[_SceneModel]
+    characters: list[_CharacterModel]
+    scenes: list[_SceneModel]
 
 
 class _AggregatedModel(BaseModel):
-    characters: List[_CharacterModel]
-    scenes: List[_SceneModel]
+    characters: list[_CharacterModel]
+    scenes: list[_SceneModel]
