@@ -4,16 +4,13 @@ import {
   BaseEvent,
   CustomEvent,
   EventType,
-  MessagesSnapshotEvent,
   RunErrorEvent,
   RunStartedEvent,
   StateSnapshotEvent,
   StepFinishedEvent,
   StepStartedEvent,
-  TextMessageContentEvent,
-  TextMessageStartEvent,
 } from "@ag-ui/core";
-import type { Observable, Subscription } from "rxjs";
+import type { Subscription } from "rxjs";
 
 import type {
   AnalysisResult,
@@ -21,6 +18,12 @@ import type {
   ApprovalPrompt,
   StepProgress,
 } from "../types";
+
+/**
+ * AG-UI（REST/SSE）専用の極薄フック。
+ * - 生のSSEイベント → 画面で使う最小の状態（status/steps/result/approval）にだけ正規化
+ * - メッセージ断片処理や詳細ログなどは省く
+ */
 
 type AgentRunOptions = Parameters<HttpAgent["run"]>[0];
 
@@ -31,7 +34,6 @@ interface UseAgentRunnerProps {
 interface AgentRunnerState {
   status: AgentStatus;
   steps: StepProgress[];
-  messages: string[];
   result: AnalysisResult | null;
   approval: ApprovalPrompt | null;
   error: string | null;
@@ -42,7 +44,6 @@ interface AgentRunnerState {
 const INITIAL_STATE: AgentRunnerState = {
   status: "idle",
   steps: [],
-  messages: [],
   result: null,
   approval: null,
   error: null,
@@ -52,15 +53,12 @@ const INITIAL_STATE: AgentRunnerState = {
 
 export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
   const [state, setState] = useState<AgentRunnerState>(INITIAL_STATE);
+
   const agentRef = useRef<HttpAgent | null>(null);
   const subscriptionRef = useRef<Subscription | null>(null);
-  const currentMessageRef = useRef<{ id: string; content: string }>({
-    id: "",
-    content: "",
-  });
 
-  // 🔎 直近のイベントをデバッグ表示するためのバッファ
-  const lastEventsRef = useRef<Array<{ t: string; n?: string }>>([]);
+  // 進捗を手早く参照・更新するためのMap（レンダー回数を抑制）
+  const stepsMapRef = useRef<Map<string, StepProgress>>(new Map());
 
   const ensureAgent = useCallback(() => {
     if (!agentRef.current) {
@@ -74,181 +72,114 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
     subscriptionRef.current = null;
   }, []);
 
-  const resetForRun = useCallback((threadId: string, runId: string) => {
-    setState((prev) => ({
-      ...prev,
-      status: "running",
-      steps: [],
-      messages: [],
-      result: null,
-      approval: null,
-      error: null,
-      threadId,
-      runId,
-    }));
-    currentMessageRef.current = { id: "", content: "" };
+  const setStatus = useCallback((status: AgentStatus, error?: string) => {
+    setState((prev) => ({ ...prev, status, error: error ?? null }));
   }, []);
 
-  const appendMessageChunk = useCallback((id: string, delta: string) => {
+  const setApproval = useCallback((approval: ApprovalPrompt | null) => {
+    setState((prev) => ({ ...prev, approval }));
+  }, []);
+
+  const setResult = useCallback((partial: Partial<AnalysisResult>) => {
     setState((prev) => {
-      const messages = [...prev.messages];
-      if (currentMessageRef.current.id !== id) {
-        currentMessageRef.current = { id, content: "" };
-        messages.push("");
-      }
-      currentMessageRef.current.content += delta;
-      messages[messages.length - 1] = currentMessageRef.current.content;
-      return { ...prev, messages };
+      const prevResult = prev.result ?? {
+        characters: [],
+        scenes: [],
+        generated_at: undefined,
+        output_path: undefined,
+      };
+      const merged: AnalysisResult = {
+        characters: partial.characters ?? prevResult.characters,
+        scenes: partial.scenes ?? prevResult.scenes,
+        generated_at:
+          (partial as any)?.generated_at ?? (prevResult as any)?.generated_at,
+        output_path:
+          (partial as any)?.output_path ?? (prevResult as any)?.output_path,
+      };
+      return { ...prev, result: merged };
     });
   }, []);
 
-  const markMessageEnd = useCallback(() => {
-    currentMessageRef.current = { id: "", content: "" };
+  const updateStep = useCallback((name: string, status: StepProgress["status"]) => {
+    const m = stepsMapRef.current;
+    m.set(name, { name, status });
+    setState((prev) => ({ ...prev, steps: Array.from(m.values()) }));
   }, []);
 
-  const updateSteps = useCallback(
-    (stepName: string, status: StepProgress["status"]) => {
-      setState((prev) => {
-        const existingIndex = prev.steps.findIndex(
-          (step) => step.name === stepName
-        );
-        const steps = [...prev.steps];
-        if (existingIndex >= 0) {
-          steps[existingIndex] = { name: stepName, status };
-        } else {
-          steps.push({ name: stepName, status });
-        }
-        return { ...prev, steps };
-      });
-    },
-    []
-  );
+  // --- Event Handlers ---
 
   const handleStateSnapshot = useCallback((event: StateSnapshotEvent) => {
-    const snapshot = event.snapshot as Record<string, unknown> | null;
-    if (!snapshot) return;
+    const snapshot = (event.snapshot as Record<string, unknown>) ?? {};
+    const characters = Array.isArray(snapshot.characters)
+      ? (snapshot.characters as AnalysisResult["characters"])
+      : undefined;
+    const scenes = Array.isArray(snapshot.scenes)
+      ? (snapshot.scenes as AnalysisResult["scenes"])
+      : undefined;
 
-    setState((prev) => {
-      const characters = Array.isArray(snapshot.characters)
-        ? (snapshot.characters as AnalysisResult["characters"])
-        : (prev.result?.characters ?? []);
-      const scenes = Array.isArray(snapshot.scenes)
-        ? (snapshot.scenes as AnalysisResult["scenes"])
-        : (prev.result?.scenes ?? []);
-      const aggregated = snapshot.aggregated as
-        | Record<string, unknown>
-        | undefined;
-      const result: AnalysisResult = {
-        characters,
-        scenes,
-        generated_at:
-          typeof aggregated?.generated_at === "string"
-            ? aggregated.generated_at
-            : prev.result?.generated_at,
-        output_path:
-          typeof snapshot.output_path === "string"
-            ? snapshot.output_path
-            : prev.result?.output_path,
-      };
-      return { ...prev, result };
+    const aggregated =
+      snapshot.aggregated && typeof snapshot.aggregated === "object"
+        ? (snapshot.aggregated as Record<string, unknown>)
+        : undefined;
+
+    setResult({
+      characters,
+      scenes,
+      generated_at:
+        typeof aggregated?.generated_at === "string"
+          ? (aggregated.generated_at as string)
+          : undefined,
+      output_path:
+        typeof snapshot.output_path === "string"
+          ? (snapshot.output_path as string)
+          : undefined,
     });
-  }, []);
+  }, [setResult]);
 
   const handleApprovalEvent = useCallback((event: CustomEvent) => {
     if (event.name !== "on_interrupt") return;
 
-    // 🔎 受け取った値をそのままログ
-    console.groupCollapsed("[AG-UI] on_interrupt");
-    console.log("raw value:", event.value);
-    console.groupEnd();
-
-    const rawValue = event.value;
-    let parsed: unknown = rawValue;
-    if (typeof rawValue === "string") {
+    const raw = event.value;
+    let obj: any = raw;
+    if (typeof raw === "string") {
       try {
-        parsed = JSON.parse(rawValue);
+        obj = JSON.parse(raw);
       } catch {
-        parsed = rawValue;
+        obj = raw;
       }
     }
-    if (!parsed || typeof parsed !== "object") return;
+    if (!obj || typeof obj !== "object") return;
 
-    const data = parsed as Record<string, unknown>;
-    const files = Array.isArray((data as any).files)
-      ? ((data as any).files.filter(
-          (value: unknown): value is string => typeof value === "string"
-        ) as string[])
-      : [];
+    const files =
+      Array.isArray(obj.files) && obj.files.every((v: unknown) => typeof v === "string")
+        ? (obj.files as string[])
+        : [];
 
     const approval: ApprovalPrompt = {
-      chunkCount: Number((data as any).chunk_count ?? (data as any).chunkCount ?? 0),
-      totalCharacters: Number(
-        (data as any).total_characters ?? (data as any).totalCharacters ?? 0
-      ),
+      chunkCount: Number(obj.chunk_count ?? obj.chunkCount ?? 0),
+      totalCharacters: Number(obj.total_characters ?? obj.totalCharacters ?? 0),
       files,
     };
-
-    setState((prev) => {
-      // 「completed」に上書きされてもダイアログを開くため、approval を先に確実にセット
-      return { ...prev, approval, status: "awaiting-approval" };
-    });
-  }, []);
+    setApproval(approval);
+    setStatus("awaiting-approval");
+  }, [setApproval, setStatus]);
 
   const handleEvent = useCallback(
     (event: BaseEvent) => {
-      // 🔎 すべてのイベントを簡易記録
-      lastEventsRef.current.push({
-        t: event.type,
-        n: (event as any).name,
-      });
-      if (lastEventsRef.current.length > 25) {
-        lastEventsRef.current.shift();
-      }
-
-      // 🔎 コンソール出力（うるさい時は必要箇所だけ残す）
-      // console.debug("[AG-UI EVENT]", event);
-
       switch (event.type) {
         case EventType.RUN_STARTED: {
-          const runEvent = event as RunStartedEvent;
-          setState((prev) => ({
-            ...prev,
-            runId: runEvent.runId,
-            status: "running",
-          }));
+          const e = event as RunStartedEvent;
+          setState((prev) => ({ ...prev, runId: e.runId, status: "running" }));
           break;
         }
         case EventType.STEP_STARTED: {
-          const stepEvent = event as StepStartedEvent;
-          updateSteps(stepEvent.stepName, "running");
+          const e = event as StepStartedEvent;
+          updateStep(e.stepName, "running");
           break;
         }
         case EventType.STEP_FINISHED: {
-          const stepEvent = event as StepFinishedEvent;
-          updateSteps(stepEvent.stepName, "completed");
-          break;
-        }
-        case EventType.TEXT_MESSAGE_START: {
-          const msgEvent = event as TextMessageStartEvent;
-          currentMessageRef.current = { id: msgEvent.messageId, content: "" };
-          break;
-        }
-        case EventType.TEXT_MESSAGE_CONTENT: {
-          const msgEvent = event as TextMessageContentEvent;
-          appendMessageChunk(msgEvent.messageId, msgEvent.delta ?? "");
-          break;
-        }
-        case EventType.TEXT_MESSAGE_END: {
-          markMessageEnd();
-          break;
-        }
-        case EventType.MESSAGES_SNAPSHOT: {
-          const snapshotEvent = event as MessagesSnapshotEvent;
-          const assistantMessages =
-            snapshotEvent.messages
-              ?.filter((msg) => msg.role === "assistant")
-              .map((msg) => msg.content ?? "") ?? [];
-          setState((prev) => ({ ...prev, messages: assistantMessages }));
+          const e = event as StepFinishedEvent;
+          updateStep(e.stepName, "completed");
           break;
         }
         case EventType.STATE_SNAPSHOT: {
@@ -260,14 +191,8 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
           break;
         }
         case EventType.RUN_FINISHED: {
-          // 🔎 直前 10 イベントのダンプ
-          console.groupCollapsed("[AG-UI] RUN_FINISHED — last events");
-          console.table(lastEventsRef.current.slice(-10));
-          console.groupEnd();
-
           setState((prev) => {
-            // すでに awaiting-approval なら、ステータスを completed にしない
-            // （Radix の Dialog を開いたままにするため）
+            // 承認ダイアログを開いている場合は completed にしない（UI都合）
             const keepAwaiting =
               prev.status === "awaiting-approval" && prev.approval !== null;
             return { ...prev, status: keepAwaiting ? "awaiting-approval" : "completed" };
@@ -276,12 +201,8 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
           break;
         }
         case EventType.RUN_ERROR: {
-          const errorEvent = event as RunErrorEvent;
-          setState((prev) => ({
-            ...prev,
-            status: "error",
-            error: errorEvent.message,
-          }));
+          const e = event as RunErrorEvent;
+          setStatus("error", e.message);
           cleanup();
           break;
         }
@@ -289,39 +210,37 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
           break;
       }
     },
-    [
-      appendMessageChunk,
-      cleanup,
-      handleApprovalEvent,
-      handleStateSnapshot,
-      markMessageEnd,
-      updateSteps,
-    ]
+    [cleanup, handleApprovalEvent, handleStateSnapshot, setStatus, updateStep]
   );
 
-  const subscribeToEvents = useCallback(
-    (observable: Observable<BaseEvent>) => {
+  const subscribeTo = useCallback(
+    (runOptions: AgentRunOptions) => {
       cleanup();
+      const agent = ensureAgent();
+      const observable = agent.run(runOptions);
       subscriptionRef.current = observable.subscribe({
         next: handleEvent,
-        error: (error) => {
-          console.error("Agent stream error", error);
-          setState((prev) => ({
-            ...prev,
-            status: "error",
-            error: String(error),
-          }));
+        error: (err: unknown) => {
+          setStatus("error", String(err));
         },
       });
     },
-    [cleanup, handleEvent]
+    [cleanup, ensureAgent, handleEvent, setStatus]
   );
 
+  // --- Public API ---
+
   const start = useCallback(() => {
-    const agent = ensureAgent();
     const threadId = crypto.randomUUID();
     const runId = crypto.randomUUID();
-    resetForRun(threadId, runId);
+    stepsMapRef.current.clear();
+    setState((_) => ({
+      ...INITIAL_STATE,
+      status: "running",
+      threadId,
+      runId,
+    }));
+
     const runOptions: AgentRunOptions = {
       threadId,
       runId,
@@ -331,14 +250,12 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
       tools: [],
       context: [],
     };
-    const observable = agent.run(runOptions);
-    subscribeToEvents(observable);
-  }, [ensureAgent, resetForRun, subscribeToEvents]);
+    subscribeTo(runOptions);
+  }, [subscribeTo]);
 
   const resume = useCallback(
-    (approvalAccepted: boolean) => {
+    (approved: boolean) => {
       if (!state.threadId) return;
-      const agent = ensureAgent();
       const runId = crypto.randomUUID();
       setState((prev) => ({
         ...prev,
@@ -350,26 +267,17 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
         threadId: state.threadId,
         runId,
         forwardedProps: {
-          command: {
-            resume: {
-              approved: approvalAccepted,
-            },
-          },
+          command: { resume: { approved } },
         },
         messages: [],
         state: {},
         tools: [],
         context: [],
       };
-      const observable = agent.run(runOptions);
-      subscribeToEvents(observable);
+      subscribeTo(runOptions);
     },
-    [ensureAgent, state.threadId, subscribeToEvents]
+    [state.threadId, subscribeTo]
   );
 
-  return {
-    state,
-    start,
-    resume,
-  };
+  return { state, start, resume };
 }
