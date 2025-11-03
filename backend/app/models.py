@@ -32,6 +32,11 @@ class AnalysisResult(TypedDict):
     generated_at: str
 
 
+class StepItem(TypedDict):
+    name: str
+    status: str  # "running" | "completed"
+
+
 class AnalysisState(TypedDict, total=False):
     """LangGraph state shared by all nodes."""
 
@@ -45,6 +50,7 @@ class AnalysisState(TypedDict, total=False):
     output_path: str | None
     characters: list[CharacterProfile]
     scenes: list[SceneSummary]
+    steps: list[StepItem]  # ← UI 進捗表示用
 
 
 @dataclass
@@ -66,8 +72,8 @@ class ChunkPayload:
 
 class ApprovalRequest(TypedDict):
     type: str
-    chunk_count: int
-    total_characters: int
+    chunkCount: int
+    totalCharacters: int
     files: list[str]
 
 

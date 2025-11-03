@@ -20,60 +20,73 @@ from .models import (
     ApprovalResponse,
     ChunkAnalysis,
     ChunkPayload,
+    StepItem,
 )
 from .prompts import AGGREGATION_PROMPT, CHUNK_ANALYSIS_PROMPT
 from .text_loader import build_chunks, read_text_files
 
 
-def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
-    llm = ChatOpenAI(
-        model=settings.openai_model, temperature=0, api_key=settings.openai_api_key
-    )
+# ---- helpers -----------------------------------------------------------------
+def _set_step(state: AnalysisState, name: str, status: str) -> list[StepItem]:
+    """UI向けに steps を state に入れる（同名は上書き）"""
+    steps = list(state.get("steps", []))
+    names = [s["name"] for s in steps]
+    if name in names:
+        idx = names.index(name)
+        steps[idx] = {"name": name, "status": status}
+    else:
+        steps.append({"name": name, "status": status})
+    return steps
 
-    # OpenAI structured output で Pydantic モデルを直接返す
-    chunk_chain = CHUNK_ANALYSIS_PROMPT | llm.with_structured_output(
-        _ChunkAnalysisModel
-    )
-    aggregation_chain = AGGREGATION_PROMPT | llm.with_structured_output(
-        _AggregatedModel
-    )
+
+def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
+    llm = ChatOpenAI(model=settings.openai_model, temperature=0, api_key=settings.openai_api_key)
+
+    chunk_chain = CHUNK_ANALYSIS_PROMPT | llm.with_structured_output(_ChunkAnalysisModel)
+    aggregation_chain = AGGREGATION_PROMPT | llm.with_structured_output(_AggregatedModel)
 
     builder: StateGraph[AnalysisState] = StateGraph(AnalysisState)
 
-    def load_files(_: AnalysisState) -> AnalysisState:
+    def load_files(state: AnalysisState) -> AnalysisState:
         paths = read_text_files(settings.resolved_project_dir)
         chunks = build_chunks(paths)
+        steps = _set_step(state, "load_files", "completed")
         return {
             "chunk_inputs": chunks,
             "expected_chunks": len(chunks),
+            "steps": steps,
+            # スナップショットに空配列でも確実に出す
+            "characters": state.get("characters", []),
+            "scenes": state.get("scenes", []),
+            "aggregated": state.get("aggregated")
+            or {
+                "characters": [],
+                "scenes": [],
+                "generated_at": None,
+            },
+            "output_path": state.get("output_path"),
         }
 
     def request_approval(state: AnalysisState) -> AnalysisState:
         if state.get("approval"):
-            print("[request_approval] already approved -> skip")
             return {}
-
         chunk_inputs = state.get("chunk_inputs", [])
         request: ApprovalRequest = {
             "type": "analysis_approval",
-            "chunk_count": len(chunk_inputs),
-            "total_characters": sum(len(chunk.text) for chunk in chunk_inputs),
+            "chunkCount": len(chunk_inputs),
+            "totalCharacters": sum(len(chunk.text) for chunk in chunk_inputs),
             "files": sorted({chunk.path.name for chunk in chunk_inputs}),
         }
-        print("[request_approval] emitting interrupt:", request)
         response: ApprovalResponse = interrupt(request)
-        print("[request_approval] got response from UI:", response)
-
         if not response.get("approved"):
-            print("[request_approval] user declined -> short-circuit aggregation")
+            # ユーザーが中止 → 集約のみ通して空結果を返す
             return {"approval": {"approved": False}}
-
-        print("[request_approval] user approved")
         return {"approval": response}
 
-
-    def dispatch_chunks(_: AnalysisState) -> AnalysisState:
-        return {}
+    def dispatch_chunks(state: AnalysisState) -> AnalysisState:
+        # 分析フェーズ開始（UI表示用）
+        steps = _set_step(state, "analyze_chunks", "running")
+        return {"steps": steps}
 
     def route_dispatch(state: AnalysisState) -> Iterable[Any]:
         approval = state.get("approval")
@@ -106,6 +119,10 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
         return {"chunk_results": [result]}
 
     def aggregate_results(state: AnalysisState) -> AnalysisState:
+        # analyze_chunks を completed にし、aggregate を running に
+        steps = _set_step(state, "analyze_chunks", "completed")
+        steps = _set_step({"steps": steps}, "aggregate", "running")
+
         chunk_results = state.get("chunk_results", [])
         if not chunk_results:
             aggregated: AnalysisResult = {
@@ -124,16 +141,21 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
                 "scenes": [scene.model_dump() for scene in summary.scenes],
                 "generated_at": datetime.utcnow().isoformat(),
             }
+
         return {
             "aggregated": aggregated,
             "characters": aggregated["characters"],
             "scenes": aggregated["scenes"],
+            "steps": steps,
         }
 
     def persist(state: AnalysisState) -> AnalysisState:
+        # aggregate を completed に
+        steps = _set_step(state, "aggregate", "completed")
+
         aggregated = state.get("aggregated")
         if not aggregated:
-            return {}
+            return {"steps": steps}
         output_path = (
             settings.resolved_output_dir
             / f"analysis-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
@@ -141,7 +163,7 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
         output_path.write_text(
             json.dumps(aggregated, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        return {"output_path": str(output_path)}
+        return {"output_path": str(output_path), "steps": steps}
 
     builder.add_node("load_files", load_files)
     builder.add_node("request_approval", request_approval)
@@ -163,7 +185,6 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
     builder.add_edge("persist", END)
 
     compiled = builder.compile(checkpointer=MemorySaver())
-    # compiled.get_graph().print_ascii() # dev only
     return compiled
 
 
