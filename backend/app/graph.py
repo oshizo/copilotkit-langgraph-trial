@@ -80,8 +80,13 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
         return out
 
     def request_approval(state: AnalysisState) -> AnalysisState:
+        """
+        Human-in-the-loop の承認は LangGraph の interrupt を素直に使う。
+        ここでは STATE をいじらず、CUSTOM(on_interrupt) イベントだけでフロントに通知する。
+        """
         if state.get("approval"):
             return {}
+
         chunk_inputs = state.get("chunk_inputs", [])
         req: ApprovalRequest = {
             "type": "analysis_approval",
@@ -89,13 +94,13 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
             "totalCharacters": sum(len(ch.text) for ch in chunk_inputs),
             "files": sorted({ch.path.name for ch in chunk_inputs}),
         }
-        # VMをawaitingにしてからinterrupt（UIはSTATEかCUSTOMどちらでも反応できる）
-        await_state: AnalysisState = {**state, "approval": req}
-        vm = _vm(await_state, status="awaiting-approval")
-        _ = vm  # 型安心のため
+
+        # フロントは CUSTOM(on_interrupt) を受けてダイアログを開く
         resp: ApprovalResponse = interrupt(req)
+
+        # 承認結果だけ state に反映（以降の分岐用）
         if not resp.get("approved"):
-            # 中止→空結果でaggregateへ
+            # 中止→空結果で aggregate へ
             return {"approval": {"approved": False}}
         return {"approval": resp}
 

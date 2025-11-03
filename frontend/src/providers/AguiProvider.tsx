@@ -3,16 +3,24 @@ import { HttpAgent } from "@ag-ui/client";
 import type { Subscription } from "rxjs";
 import type { AnalysisResult, AgentStatus, ApprovalPrompt, StepProgress } from "../types";
 
+/**
+ * 本番寄りの設定:
+ * - DEBUG=false（必要時に true に）
+ * - approval の開閉は CUSTOM(on_interrupt) でのみ制御
+ * - STATE_SNAPSHOT では approval を触らない
+ * - resume 実行時のみダイアログを閉じる
+ */
+const DEBUG = false;
+
 type VM = {
   status: AgentStatus;
   steps: StepProgress[];
   result: AnalysisResult | null;
-  approval: ApprovalPrompt | null;
   error: string | null;
 };
 
 type Ctx = {
-  state: VM;
+  state: VM & { approval: ApprovalPrompt | null; approvalOpen: boolean };
   actions: { start(): void; approve(): void; decline(): void; reset(): void };
 };
 
@@ -24,6 +32,15 @@ export function useAgent() {
   return v;
 }
 
+type AnyRecord = Record<string, unknown>;
+
+function normalizeApproval(raw: AnyRecord): ApprovalPrompt {
+  const chunkCount = Number(raw.chunkCount ?? raw.chunk_count ?? 0) || 0;
+  const totalCharacters = Number(raw.totalCharacters ?? raw.total_characters ?? 0) || 0;
+  const files = Array.isArray(raw.files) ? (raw.files as string[]) : [];
+  return { chunkCount, totalCharacters, files };
+}
+
 export function AguiProvider({
   apiUrl,
   children,
@@ -31,98 +48,81 @@ export function AguiProvider({
   apiUrl: string;
   children: React.ReactNode;
 }) {
-  const [state, setState] = useState<VM>({
+  const [vm, setVm] = useState<VM>({
     status: "idle",
     steps: [],
     result: null,
-    approval: null,
     error: null,
   });
+  const [approval, setApproval] = useState<ApprovalPrompt | null>(null);
+  const [approvalOpen, setApprovalOpen] = useState(false);
 
   const agentRef = useRef<HttpAgent>();
   const subRef = useRef<Subscription | null>(null);
   const threadIdRef = useRef<string | null>(null);
 
-  const ensure = useCallback(
-    () => (agentRef.current ??= new HttpAgent({ url: apiUrl })),
-    [apiUrl]
-  );
+  // ---- 計測（必要に応じて）----
+  const traceRef = useRef<{ t: string; type: string; note?: string }[]>([]);
+  const lastStatusNoteRef = useRef<string>("");
+
+  const ensure = useCallback(() => (agentRef.current ??= new HttpAgent({ url: apiUrl })), [apiUrl]);
 
   const cleanup = useCallback(() => {
     subRef.current?.unsubscribe();
     subRef.current = null;
   }, []);
 
-  // ---- helpers ----
-  function isValidApproval(x: unknown): x is ApprovalPrompt {
-    if (!x || typeof x !== "object") return false;
-    const a = x as any;
-    return Number.isFinite(a.chunkCount ?? a.chunk_count) &&
-           Number.isFinite(a.totalCharacters ?? a.total_characters) &&
-           Array.isArray(a.files);
-  }
-
-  function normalizeApproval(x: any): ApprovalPrompt {
-    return {
-      chunkCount: Number(x.chunkCount ?? x.chunk_count ?? 0),
-      totalCharacters: Number(x.totalCharacters ?? x.total_characters ?? 0),
-      files: Array.isArray(x.files) ? (x.files as string[]) : [],
-    };
+  function recordTrace(type: string, note?: string) {
+    if (!DEBUG) return;
+    // 連続同一 note のスパムを抑制
+    if (type.startsWith("STATE_SNAPSHOT")) {
+      if (note && lastStatusNoteRef.current === note) return;
+      lastStatusNoteRef.current = note ?? "";
+    }
+    const stamp = new Date().toISOString();
+    const entry = { t: stamp, type, note };
+    traceRef.current.push(entry);
+    if (traceRef.current.length > 40) traceRef.current.shift();
+    // eslint-disable-next-line no-console
+    console.log(`[TRACE] ${stamp} ${type}${note ? " :: " + note : ""}`);
   }
 
   const onEvent = useCallback((e: any) => {
     if (e?.type === "STATE_SNAPSHOT") {
       const snap = e.snapshot ?? {};
-      const vm = (snap.vm ?? snap) as any;
+      const next = (snap.vm ?? snap) as AnyRecord;
 
-      setState((prev) => {
-        // status / steps / result / error は素直に反映
-        const nextStatus: AgentStatus = (vm?.status as AgentStatus) ?? prev.status;
-        const nextSteps: StepProgress[] = Array.isArray(vm?.steps) ? (vm.steps as StepProgress[]) : prev.steps;
-        const nextResult: AnalysisResult | null =
-          (vm?.result as AnalysisResult | null) ?? prev.result;
-        const nextError: string | null =
-          typeof vm?.error === "string" ? vm.error : prev.error;
-
-        // approval は「有効な形のときだけ」上書き。それ以外は prev を保持。
-        let nextApproval = prev.approval;
-        if (isValidApproval(vm?.approval)) {
-          nextApproval = normalizeApproval(vm.approval);
-        }
-        // 完了・エラー時は明示的にクリア（ダイアログ閉じ）
-        if (nextStatus === "completed" || nextStatus === "error") {
-          nextApproval = null;
-        }
-
-        return {
-          status: nextStatus,
-          steps: nextSteps,
-          result: nextResult,
-          approval: nextApproval,
-          error: nextError,
-        };
-      });
-    } else if (e?.type === "CUSTOM" && e?.name === "on_interrupt") {
-      // 一次情報。ここでは常に上書き（承認待ちトリガー）
-      const raw = e.value;
-      const parsed = typeof raw === "string" ? safeParse(raw) : raw;
-      if (parsed && typeof parsed === "object") {
-        setState((s) => ({
-          ...s,
-          status: "awaiting-approval",
-          approval: normalizeApproval(parsed as any),
-        }));
-      }
-    } else if (e?.type === "RUN_ERROR") {
-      setState((s) => ({
-        ...s,
-        status: "error",
-        error: String(e.message ?? "unknown error"),
-        // エラー時は承認を確実に閉じる
-        approval: null,
+      // まず UI に反映（status は存在すれば採用、なければ現状維持）
+      setVm((prev) => ({
+        status: (next.status as AgentStatus) ?? prev.status ?? "idle",
+        steps: Array.isArray(next.steps) ? (next.steps as StepProgress[]) : prev.steps ?? [],
+        result: (next.result as AnalysisResult | null) ?? prev.result ?? null,
+        error: typeof next.error === "string" ? next.error : prev.error ?? null,
       }));
+
+      // 計測用 note は "実際に UI に反映された status" を使う
+      const statusNote: string =
+        (typeof next.status === "string" ? String(next.status) : "") || String(vm.status || "idle");
+      recordTrace("STATE_SNAPSHOT", `status=${statusNote}`);
+    } else if (e?.type === "CUSTOM" && e?.name === "on_interrupt") {
+      const raw = typeof e.value === "string" ? safeParse(e.value) : e.value;
+      if (raw && typeof raw === "object") {
+        const ap = normalizeApproval(raw as AnyRecord);
+        setApproval(ap);
+        setApprovalOpen(true);
+        if (DEBUG) {
+          // eslint-disable-next-line no-console
+          console.debug("[Dialog] open with approval:", ap);
+        }
+      }
+      recordTrace("CUSTOM:on_interrupt", typeof e.value === "string" ? "string payload" : "object payload");
+    } else if (e?.type === "RUN_ERROR") {
+      setVm((s) => ({ ...s, status: "error", error: String(e.message ?? "unknown error") }));
+      setApprovalOpen(false);
+      setApproval(null);
+      recordTrace("RUN_ERROR", String(e?.message ?? "unknown"));
     }
-  }, []);
+  }, [vm.status]);
 
   const subscribe = useCallback(
     (opts: any) => {
@@ -130,41 +130,51 @@ export function AguiProvider({
       const obs = ensure().run(opts);
       subRef.current = obs.subscribe({
         next: onEvent,
-        error: (err: any) =>
-          setState((s) => ({ ...s, status: "error", error: String(err), approval: null })),
+        error: (err: any) => {
+          setVm((s) => ({ ...s, status: "error", error: String(err) }));
+          setApprovalOpen(false);
+          recordTrace("STREAM_ERROR", String(err));
+        },
       });
     },
     [cleanup, ensure, onEvent]
   );
 
   const start = useCallback(() => {
-    setState({ status: "running", steps: [], result: null, approval: null, error: null });
+    recordTrace("ACTION:start");
+    setVm({ status: "running", steps: [], result: null, error: null });
+    setApproval(null);
+    setApprovalOpen(false);
+
     const threadId = crypto.randomUUID();
     threadIdRef.current = threadId;
+
     subscribe({
       threadId,
       runId: crypto.randomUUID(),
-      messages: [],
-      forwardedProps: {},
       state: {},
+      messages: [],
       tools: [],
       context: [],
+      forwardedProps: {},
     });
   }, [subscribe]);
 
   const resume = useCallback(
     (approved: boolean) => {
+      recordTrace("ACTION:resume", approved ? "approved=true" : "approved=false");
       if (!threadIdRef.current) return;
-      // ローカルで即座に閉じる（サーバのスナップショット待ちで誤上書きされないように）
-      setState((s) => ({ ...s, status: "running", approval: null }));
+      // ダイアログはここで閉じる（状態は STATE に任せる）
+      setApprovalOpen(false);
+
       subscribe({
         threadId: threadIdRef.current,
         runId: crypto.randomUUID(),
-        forwardedProps: { command: { resume: { approved } } },
-        messages: [],
         state: {},
+        messages: [],
         tools: [],
         context: [],
+        forwardedProps: { command: { resume: { approved } } },
       });
     },
     [subscribe]
@@ -176,15 +186,22 @@ export function AguiProvider({
       approve: () => resume(true),
       decline: () => resume(false),
       reset: () => {
+        recordTrace("ACTION:reset");
         cleanup();
         threadIdRef.current = null;
-        setState({ status: "idle", steps: [], result: null, approval: null, error: null });
+        setVm({ status: "idle", steps: [], result: null, error: null });
+        setApproval(null);
+        setApprovalOpen(false);
       },
     }),
     [cleanup, resume, start]
   );
 
-  return <C.Provider value={{ state, actions }}>{children}</C.Provider>;
+  return (
+    <C.Provider value={{ state: { ...vm, approval, approvalOpen }, actions }}>
+      {children}
+    </C.Provider>
+  );
 }
 
 function safeParse(s: string) {

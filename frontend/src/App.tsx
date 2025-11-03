@@ -16,7 +16,9 @@ export default function App() {
     [state.status, state.error]
   );
   const busy = isAgentBusy(state.status);
-  const approvalOpen = Boolean(state.approval);
+
+  // ★ ダイアログの開閉は Provider 管理の approvalOpen を使う
+  const approvalOpen = state.approvalOpen;
 
   return (
     <div className="min-h-screen bg-muted/40">
@@ -47,7 +49,11 @@ export default function App() {
       <AnalysisApprovalDialog
         approval={state.approval}
         open={approvalOpen}
-        onOpenChange={() => {}}
+        onOpenChange={(open) => {
+          // Provider 側でのみ制御するので、ここでは no-op か、
+          // 将来的に「×ボタンで閉じる」を許可するなら actions.decline() などへ委譲。
+          // 今回は何もしない（サーバの意図を尊重）
+        }}
         onDecision={(approved) => (approved ? actions.approve() : actions.decline())}
       />
     </div>
