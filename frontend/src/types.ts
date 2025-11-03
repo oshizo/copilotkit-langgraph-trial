@@ -11,8 +11,9 @@ export interface SceneSummary {
 export interface AnalysisResult {
   characters: CharacterProfile[];
   scenes: SceneSummary[];
-  generated_at?: string;
-  output_path?: string;
+  // VM最小化のため null も許容（Providerでの正規化を不要に）
+  generated_at?: string | null;
+  output_path?: string | null;
 }
 
 export interface ApprovalPrompt {
@@ -29,6 +30,6 @@ export type AgentStatus =
   | "error";
 
 export interface StepProgress {
-  name: string;
+  name: string; // "load_files" | "analyze" | "aggregate"
   status: "running" | "completed";
 }

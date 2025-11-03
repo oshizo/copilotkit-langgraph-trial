@@ -29,16 +29,16 @@ class ChunkAnalysis(TypedDict):
 class AnalysisResult(TypedDict):
     characters: list[CharacterProfile]
     scenes: list[SceneSummary]
-    generated_at: str
+    generated_at: str | None
 
 
 class StepItem(TypedDict):
-    name: str
+    name: str  # "load_files" | "analyze" | "aggregate"
     status: str  # "running" | "completed"
 
 
 class AnalysisState(TypedDict, total=False):
-    """LangGraph state shared by all nodes."""
+    """LangGraph shared state."""
 
     messages: Annotated[list[BaseMessage], add_messages]
     tools: list
@@ -50,7 +50,12 @@ class AnalysisState(TypedDict, total=False):
     output_path: str | None
     characters: list[CharacterProfile]
     scenes: list[SceneSummary]
-    steps: list[StepItem]  # ← UI 進捗表示用
+    steps: list[StepItem]
+
+    # ---- VM to emit in STATE_SNAPSHOT (UI reads only this) ----
+    status: str | None
+    result: AnalysisResult | None
+    error: str | None
 
 
 @dataclass

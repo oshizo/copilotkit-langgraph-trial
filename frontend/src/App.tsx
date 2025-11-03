@@ -16,7 +16,6 @@ export default function App() {
     [state.status, state.error]
   );
   const busy = isAgentBusy(state.status);
-
   const approvalOpen = Boolean(state.approval);
 
   return (
@@ -29,37 +28,27 @@ export default function App() {
           disabled={busy}
         />
 
-        {/* 進捗だけを上段に表示 */}
+        {/* 1行プログレス */}
         <section>
           <ProgressPanel steps={state.steps} />
         </section>
 
-        {/* 結果（キャラクター） */}
         <section className="space-y-4">
-          <div>
-            <h2 className="text-2xl font-semibold tracking-tight">キャラクター</h2>
-          </div>
+          <div><h2 className="text-2xl font-semibold tracking-tight">キャラクター</h2></div>
           <CharactersSection result={state.result} />
         </section>
 
-        {/* 結果（シーン） */}
         <section className="space-y-4">
-          <div>
-            <h2 className="text-2xl font-semibold tracking-tight">シーン</h2>
-          </div>
+          <div><h2 className="text-2xl font-semibold tracking-tight">シーン</h2></div>
           <ScenesSection result={state.result} />
         </section>
       </main>
 
-      {/* Human-in-the-Loop（承認） */}
       <AnalysisApprovalDialog
         approval={state.approval}
         open={approvalOpen}
         onOpenChange={() => {}}
-        onDecision={(approved) => {
-          if (approved) actions.approve();
-          else actions.decline();
-        }}
+        onDecision={(approved) => (approved ? actions.approve() : actions.decline())}
       />
     </div>
   );

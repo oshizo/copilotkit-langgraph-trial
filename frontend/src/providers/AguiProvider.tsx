@@ -1,19 +1,9 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 import { HttpAgent } from "@ag-ui/client";
-import {
-  BaseEvent,
-  CustomEvent,
-  EventType,
-  RunErrorEvent,
-  RunStartedEvent,
-  StateSnapshotEvent,
-  StepFinishedEvent,
-  StepStartedEvent,
-} from "@ag-ui/core";
 import type { Subscription } from "rxjs";
 import type { AnalysisResult, AgentStatus, ApprovalPrompt, StepProgress } from "../types";
 
-type AgentViewModel = {
+type VM = {
   status: AgentStatus;
   steps: StepProgress[];
   result: AnalysisResult | null;
@@ -21,251 +11,153 @@ type AgentViewModel = {
   error: string | null;
 };
 
-type AgentActions = {
-  start(): void;
-  approve(): void;
-  decline(): void;
-  reset(): void;
+type Ctx = {
+  state: VM;
+  actions: { start(): void; approve(): void; decline(): void; reset(): void };
 };
 
-type AgentContextValue = {
-  state: AgentViewModel;
-  actions: AgentActions;
-};
+const C = createContext<Ctx | null>(null);
 
-const INITIAL_VM: AgentViewModel = {
-  status: "idle",
-  steps: [],
-  result: null,
-  approval: null,
-  error: null,
-};
-
-const AgentContext = createContext<AgentContextValue | null>(null);
-
-export function useAgent(): AgentContextValue {
-  const ctx = useContext(AgentContext);
-  if (!ctx) throw new Error("useAgent must be used inside <AguiProvider>");
-  return ctx;
+export function useAgent() {
+  const v = useContext(C);
+  if (!v) throw new Error("useAgent must be used within <AguiProvider>");
+  return v;
 }
 
-type Props = {
+export function AguiProvider({
+  apiUrl,
+  children,
+}: {
   apiUrl: string;
   children: React.ReactNode;
-};
+}) {
+  const [state, setState] = useState<VM>({
+    status: "idle",
+    steps: [],
+    result: null,
+    approval: null,
+    error: null,
+  });
 
-export function AguiProvider({ apiUrl, children }: Props) {
-  const [vm, setVM] = useState<AgentViewModel>(INITIAL_VM);
-
-  // 内部状態
-  const agentRef = useRef<HttpAgent | null>(null);
-  const subscriptionRef = useRef<Subscription | null>(null);
+  const agentRef = useRef<HttpAgent>();
+  const subRef = useRef<Subscription | null>(null);
   const threadIdRef = useRef<string | null>(null);
-  const stepsMapRef = useRef<Map<string, StepProgress>>(new Map());
 
-  const ensureAgent = useCallback(() => {
-    if (!agentRef.current) {
-      agentRef.current = new HttpAgent({ url: apiUrl });
-    }
-    return agentRef.current;
-  }, [apiUrl]);
-
-  const setStatus = useCallback((status: AgentStatus, error?: string | null) => {
-    setVM((prev) => ({ ...prev, status, error: error ?? null }));
-  }, []);
-
-  const setApproval = useCallback((approval: ApprovalPrompt | null) => {
-    setVM((prev) => ({ ...prev, approval }));
-  }, []);
-
-  // NOTE: generated_at / output_path は undefined を使う（null は使わない）
-  const setResult = useCallback((partial: Partial<AnalysisResult> | null) => {
-    setVM((prev) => {
-      if (partial === null) return { ...prev, result: null };
-      const prevRes: AnalysisResult =
-        prev.result ?? { characters: [], scenes: [], generated_at: undefined, output_path: undefined };
-      const merged: AnalysisResult = {
-        characters: partial.characters ?? prevRes.characters,
-        scenes: partial.scenes ?? prevRes.scenes,
-        generated_at:
-          (partial as any)?.generated_at !== undefined
-            ? ((partial as any).generated_at as string | undefined)
-            : prevRes.generated_at,
-        output_path:
-          (partial as any)?.output_path !== undefined
-            ? ((partial as any).output_path as string | undefined)
-            : prevRes.output_path,
-      };
-      return { ...prev, result: merged };
-    });
-  }, []);
-
-  const updateStep = useCallback((name: string, status: StepProgress["status"]) => {
-    stepsMapRef.current.set(name, { name, status });
-    setVM((prev) => ({ ...prev, steps: Array.from(stepsMapRef.current.values()) }));
-  }, []);
+  const ensure = useCallback(
+    () => (agentRef.current ??= new HttpAgent({ url: apiUrl })),
+    [apiUrl]
+  );
 
   const cleanup = useCallback(() => {
-    subscriptionRef.current?.unsubscribe();
-    subscriptionRef.current = null;
+    subRef.current?.unsubscribe();
+    subRef.current = null;
   }, []);
 
-  // --- Event handlers ---
+  // ---- helpers ----
+  function isValidApproval(x: unknown): x is ApprovalPrompt {
+    if (!x || typeof x !== "object") return false;
+    const a = x as any;
+    return Number.isFinite(a.chunkCount ?? a.chunk_count) &&
+           Number.isFinite(a.totalCharacters ?? a.total_characters) &&
+           Array.isArray(a.files);
+  }
 
-  const handleStateSnapshot = useCallback((event: StateSnapshotEvent) => {
-    const snapshot = (event.snapshot as Record<string, unknown>) ?? {};
-    const characters = Array.isArray(snapshot.characters)
-      ? (snapshot.characters as AnalysisResult["characters"])
-      : [];
-    const scenes = Array.isArray(snapshot.scenes)
-      ? (snapshot.scenes as AnalysisResult["scenes"])
-      : [];
-
-    const aggregated =
-      snapshot.aggregated && typeof snapshot.aggregated === "object"
-        ? (snapshot.aggregated as Record<string, unknown>)
-        : undefined;
-
-    // ← ここを undefined 正規化
-    const generated_at =
-      typeof aggregated?.generated_at === "string" ? (aggregated.generated_at as string) : undefined;
-    const output_path =
-      typeof snapshot.output_path === "string" ? (snapshot.output_path as string) : undefined;
-
-    // バックエンドが steps を載せてくれたら反映
-    if (Array.isArray((snapshot as any).steps)) {
-      try {
-        const steps = ((snapshot as any).steps as any[]).filter(
-          (s) => s && typeof s.name === "string" && (s.status === "running" || s.status === "completed")
-        );
-        for (const s of steps) updateStep(s.name, s.status);
-      } catch {
-        // no-op
-      }
-    }
-
-    setResult({ characters, scenes, generated_at, output_path });
-  }, [setResult, updateStep]);
-
-  const handleApprovalEvent = useCallback((event: CustomEvent) => {
-    if (event.name !== "on_interrupt") return;
-
-    const raw = event.value;
-    let obj: any = raw;
-    if (typeof raw === "string") {
-      try {
-        obj = JSON.parse(raw);
-      } catch {
-        obj = raw;
-      }
-    }
-    if (!obj || typeof obj !== "object") return;
-
-    const files =
-      Array.isArray(obj.files) && obj.files.every((v: unknown) => typeof v === "string")
-        ? (obj.files as string[])
-        : [];
-
-    const approval: ApprovalPrompt = {
-      chunkCount: Number(obj.chunkCount ?? obj.chunk_count ?? 0),
-      totalCharacters: Number(obj.totalCharacters ?? obj.total_characters ?? 0),
-      files,
+  function normalizeApproval(x: any): ApprovalPrompt {
+    return {
+      chunkCount: Number(x.chunkCount ?? x.chunk_count ?? 0),
+      totalCharacters: Number(x.totalCharacters ?? x.total_characters ?? 0),
+      files: Array.isArray(x.files) ? (x.files as string[]) : [],
     };
-    setApproval(approval);
-    setStatus("awaiting-approval");
-  }, [setApproval, setStatus]);
+  }
 
-  const handleEvent = useCallback(
-    (event: BaseEvent) => {
-      switch (event.type) {
-        case EventType.RUN_STARTED: {
-          const _e = event as RunStartedEvent;
-          setStatus("running");
-          break;
+  const onEvent = useCallback((e: any) => {
+    if (e?.type === "STATE_SNAPSHOT") {
+      const snap = e.snapshot ?? {};
+      const vm = (snap.vm ?? snap) as any;
+
+      setState((prev) => {
+        // status / steps / result / error は素直に反映
+        const nextStatus: AgentStatus = (vm?.status as AgentStatus) ?? prev.status;
+        const nextSteps: StepProgress[] = Array.isArray(vm?.steps) ? (vm.steps as StepProgress[]) : prev.steps;
+        const nextResult: AnalysisResult | null =
+          (vm?.result as AnalysisResult | null) ?? prev.result;
+        const nextError: string | null =
+          typeof vm?.error === "string" ? vm.error : prev.error;
+
+        // approval は「有効な形のときだけ」上書き。それ以外は prev を保持。
+        let nextApproval = prev.approval;
+        if (isValidApproval(vm?.approval)) {
+          nextApproval = normalizeApproval(vm.approval);
         }
-        case EventType.STEP_STARTED: {
-          const e = event as StepStartedEvent;
-          updateStep(normalizeStepName(e.stepName), "running");
-          break;
+        // 完了・エラー時は明示的にクリア（ダイアログ閉じ）
+        if (nextStatus === "completed" || nextStatus === "error") {
+          nextApproval = null;
         }
-        case EventType.STEP_FINISHED: {
-          const e = event as StepFinishedEvent;
-          updateStep(normalizeStepName(e.stepName), "completed");
-          break;
-        }
-        case EventType.STATE_SNAPSHOT: {
-          handleStateSnapshot(event as StateSnapshotEvent);
-          break;
-        }
-        case EventType.CUSTOM: {
-          handleApprovalEvent(event as CustomEvent);
-          break;
-        }
-        case EventType.RUN_FINISHED: {
-          setVM((prev) => {
-            const keepAwaiting = prev.status === "awaiting-approval" && prev.approval !== null;
-            return { ...prev, status: keepAwaiting ? "awaiting-approval" : "completed" };
-          });
-          cleanup();
-          break;
-        }
-        case EventType.RUN_ERROR: {
-          const e = event as RunErrorEvent;
-          setStatus("error", e.message);
-          cleanup();
-          break;
-        }
-        default:
-          break;
+
+        return {
+          status: nextStatus,
+          steps: nextSteps,
+          result: nextResult,
+          approval: nextApproval,
+          error: nextError,
+        };
+      });
+    } else if (e?.type === "CUSTOM" && e?.name === "on_interrupt") {
+      // 一次情報。ここでは常に上書き（承認待ちトリガー）
+      const raw = e.value;
+      const parsed = typeof raw === "string" ? safeParse(raw) : raw;
+      if (parsed && typeof parsed === "object") {
+        setState((s) => ({
+          ...s,
+          status: "awaiting-approval",
+          approval: normalizeApproval(parsed as any),
+        }));
       }
-    },
-    [cleanup, handleApprovalEvent, handleStateSnapshot, setStatus, updateStep]
-  );
+    } else if (e?.type === "RUN_ERROR") {
+      setState((s) => ({
+        ...s,
+        status: "error",
+        error: String(e.message ?? "unknown error"),
+        // エラー時は承認を確実に閉じる
+        approval: null,
+      }));
+    }
+  }, []);
 
-  const subscribeToRun = useCallback(
-    (runOptions: Parameters<HttpAgent["run"]>[0]) => {
+  const subscribe = useCallback(
+    (opts: any) => {
       cleanup();
-      const agent = ensureAgent();
-      const obs = agent.run(runOptions);
-      subscriptionRef.current = obs.subscribe({
-        next: handleEvent,
-        error: (err) => setStatus("error", String(err)),
+      const obs = ensure().run(opts);
+      subRef.current = obs.subscribe({
+        next: onEvent,
+        error: (err: any) =>
+          setState((s) => ({ ...s, status: "error", error: String(err), approval: null })),
       });
     },
-    [cleanup, ensureAgent, handleEvent, setStatus]
+    [cleanup, ensure, onEvent]
   );
 
-  // --- Actions ---
-
   const start = useCallback(() => {
-    stepsMapRef.current.clear();
-    setResult(null);
-    setApproval(null);
-    setStatus("running");
-
+    setState({ status: "running", steps: [], result: null, approval: null, error: null });
     const threadId = crypto.randomUUID();
-    const runId = crypto.randomUUID();
     threadIdRef.current = threadId;
-
-    const runOptions = {
+    subscribe({
       threadId,
-      runId,
+      runId: crypto.randomUUID(),
       messages: [],
       forwardedProps: {},
       state: {},
       tools: [],
       context: [],
-    };
-    subscribeToRun(runOptions);
-  }, [setApproval, setResult, setStatus, subscribeToRun]);
+    });
+  }, [subscribe]);
 
   const resume = useCallback(
     (approved: boolean) => {
       if (!threadIdRef.current) return;
-      setStatus("running");
-      setApproval(null);
-
-      const runOptions = {
+      // ローカルで即座に閉じる（サーバのスナップショット待ちで誤上書きされないように）
+      setState((s) => ({ ...s, status: "running", approval: null }));
+      subscribe({
         threadId: threadIdRef.current,
         runId: crypto.randomUUID(),
         forwardedProps: { command: { resume: { approved } } },
@@ -273,44 +165,32 @@ export function AguiProvider({ apiUrl, children }: Props) {
         state: {},
         tools: [],
         context: [],
-      };
-      subscribeToRun(runOptions);
+      });
     },
-    [setApproval, setStatus, subscribeToRun]
+    [subscribe]
   );
 
-  const approve = useCallback(() => resume(true), [resume]);
-  const decline = useCallback(() => resume(false), [resume]);
-
-  const reset = useCallback(() => {
-    stepsMapRef.current.clear();
-    setVM(INITIAL_VM);
-    cleanup();
-  }, [cleanup]);
-
-  const value = useMemo<AgentContextValue>(
+  const actions = useMemo(
     () => ({
-      state: vm,
-      actions: { start, approve, decline, reset },
+      start,
+      approve: () => resume(true),
+      decline: () => resume(false),
+      reset: () => {
+        cleanup();
+        threadIdRef.current = null;
+        setState({ status: "idle", steps: [], result: null, approval: null, error: null });
+      },
     }),
-    [vm, approve, decline, reset, start]
+    [cleanup, resume, start]
   );
 
-  return <AgentContext.Provider value={value}>{children}</AgentContext.Provider>;
+  return <C.Provider value={{ state, actions }}>{children}</C.Provider>;
 }
 
-function normalizeStepName(name: string): string {
-  switch (name) {
-    case "load_files":
-      return "load_files";
-    case "dispatch_chunks":
-    case "analyze_chunk":
-      return "analyze_chunks";
-    case "aggregate_results":
-      return "aggregate";
-    case "persist":
-      return "persist";
-    default:
-      return name;
+function safeParse(s: string) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
   }
 }
