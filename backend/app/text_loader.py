@@ -14,7 +14,7 @@ def read_text_files(directory: Path) -> list[Path]:
     return sorted(path for path in directory.glob("**/*.txt") if path.is_file())
 
 
-def build_chunks(paths: list[Path], *, max_chars: int = 20000) -> list[ChunkPayload]:
+def build_chunks(paths: list[Path], *, max_chars: int = 50000) -> list[ChunkPayload]:
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=max_chars,
         chunk_overlap=min(200, max_chars // 10),

@@ -1,8 +1,8 @@
-from ag_ui_langgraph import add_langgraph_fastapi_endpoint
+from ag_ui_langgraph import add_langgraph_fastapi_endpoint, LangGraphAgent
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .agent import create_agent
+from .graph import build_agent_graph
 from .config import get_settings
 
 settings = get_settings()
@@ -15,7 +15,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-agent = create_agent()
+
+agent = LangGraphAgent(
+    name="novel-analyzer",
+    graph=build_agent_graph(settings),
+    description="Analyzes novel manuscripts for characters and scenes",
+)
+
 add_langgraph_fastapi_endpoint(app, agent, path="/api/analyze")
 
 

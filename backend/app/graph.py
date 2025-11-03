@@ -154,7 +154,9 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
     builder.add_edge("aggregate_results", "persist")
     builder.add_edge("persist", END)
 
-    return builder.compile(checkpointer=MemorySaver())
+    compiled = builder.compile(checkpointer=MemorySaver())
+    # compiled.get_graph().print_ascii() # dev only
+    return compiled
 
 
 class _CharacterModel(BaseModel):
