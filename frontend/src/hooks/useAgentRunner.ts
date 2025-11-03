@@ -59,6 +59,9 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
     content: "",
   });
 
+  // 🔎 直近のイベントをデバッグ表示するためのバッファ
+  const lastEventsRef = useRef<Array<{ t: string; n?: string }>>([]);
+
   const ensureAgent = useCallback(() => {
     if (!agentRef.current) {
       agentRef.current = new HttpAgent({ url: apiUrl });
@@ -153,6 +156,12 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
 
   const handleApprovalEvent = useCallback((event: CustomEvent) => {
     if (event.name !== "on_interrupt") return;
+
+    // 🔎 受け取った値をそのままログ
+    console.groupCollapsed("[AG-UI] on_interrupt");
+    console.log("raw value:", event.value);
+    console.groupEnd();
+
     const rawValue = event.value;
     let parsed: unknown = rawValue;
     if (typeof rawValue === "string") {
@@ -162,25 +171,43 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
         parsed = rawValue;
       }
     }
-    if (!parsed) return;
+    if (!parsed || typeof parsed !== "object") return;
+
     const data = parsed as Record<string, unknown>;
-    const files = Array.isArray(data.files)
-      ? (data.files.filter(
-          (value): value is string => typeof value === "string"
+    const files = Array.isArray((data as any).files)
+      ? ((data as any).files.filter(
+          (value: unknown): value is string => typeof value === "string"
         ) as string[])
       : [];
+
     const approval: ApprovalPrompt = {
-      chunkCount: Number(data.chunk_count ?? data.chunkCount ?? 0),
+      chunkCount: Number((data as any).chunk_count ?? (data as any).chunkCount ?? 0),
       totalCharacters: Number(
-        data.total_characters ?? data.totalCharacters ?? 0
+        (data as any).total_characters ?? (data as any).totalCharacters ?? 0
       ),
       files,
     };
-    setState((prev) => ({ ...prev, approval, status: "awaiting-approval" }));
+
+    setState((prev) => {
+      // 「completed」に上書きされてもダイアログを開くため、approval を先に確実にセット
+      return { ...prev, approval, status: "awaiting-approval" };
+    });
   }, []);
 
   const handleEvent = useCallback(
     (event: BaseEvent) => {
+      // 🔎 すべてのイベントを簡易記録
+      lastEventsRef.current.push({
+        t: event.type,
+        n: (event as any).name,
+      });
+      if (lastEventsRef.current.length > 25) {
+        lastEventsRef.current.shift();
+      }
+
+      // 🔎 コンソール出力（うるさい時は必要箇所だけ残す）
+      // console.debug("[AG-UI EVENT]", event);
+
       switch (event.type) {
         case EventType.RUN_STARTED: {
           const runEvent = event as RunStartedEvent;
@@ -233,7 +260,18 @@ export function useAgentRunner({ apiUrl }: UseAgentRunnerProps) {
           break;
         }
         case EventType.RUN_FINISHED: {
-          setState((prev) => ({ ...prev, status: "completed" }));
+          // 🔎 直前 10 イベントのダンプ
+          console.groupCollapsed("[AG-UI] RUN_FINISHED — last events");
+          console.table(lastEventsRef.current.slice(-10));
+          console.groupEnd();
+
+          setState((prev) => {
+            // すでに awaiting-approval なら、ステータスを completed にしない
+            // （Radix の Dialog を開いたままにするため）
+            const keepAwaiting =
+              prev.status === "awaiting-approval" && prev.approval !== null;
+            return { ...prev, status: keepAwaiting ? "awaiting-approval" : "completed" };
+          });
           cleanup();
           break;
         }

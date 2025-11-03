@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import { AnalysisApprovalDialog } from "./components/analysis/AnalysisApprovalDialog";
 import { AnalysisHeader } from "./components/analysis/AnalysisHeader";
@@ -16,23 +16,21 @@ export default function App() {
     []
   );
   const { state, start, resume } = useAgentRunner({ apiUrl });
-  const [approvalOpen, setApprovalOpen] = useState(false);
-
-  useEffect(() => {
-    setApprovalOpen(Boolean(state.approval));
-  }, [state.approval]);
 
   const handleStart = () => {
     start();
   };
 
   const handleApprovalDecision = (approved: boolean) => {
-    setApprovalOpen(false);
+    // ここではローカル state を操作しない。run 再開のみ。
     resume(approved);
   };
 
   const statusMessage = getAgentStatusMessage(state.status, state.error);
   const busy = isAgentBusy(state.status);
+
+  // 承認ダイアログは「approval があるか」で完全制御（競合を排除）
+  const approvalOpen = Boolean(state.approval);
 
   return (
     <div className="min-h-screen bg-muted/40">
@@ -69,7 +67,9 @@ export default function App() {
       <AnalysisApprovalDialog
         approval={state.approval}
         open={approvalOpen}
-        onOpenChange={setApprovalOpen}
+        // Radix に「クローズを許す」ため onOpenChange は受けるが、
+        // 外側の状態は useAgentRunner のみで決める。false の時は何もしない。
+        onOpenChange={() => {}}
         onDecision={handleApprovalDecision}
       />
     </div>

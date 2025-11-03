@@ -50,6 +50,7 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
 
     def request_approval(state: AnalysisState) -> AnalysisState:
         if state.get("approval"):
+            print("[request_approval] already approved -> skip")
             return {}
 
         chunk_inputs = state.get("chunk_inputs", [])
@@ -59,10 +60,17 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
             "total_characters": sum(len(chunk.text) for chunk in chunk_inputs),
             "files": sorted({chunk.path.name for chunk in chunk_inputs}),
         }
+        print("[request_approval] emitting interrupt:", request)
         response: ApprovalResponse = interrupt(request)
+        print("[request_approval] got response from UI:", response)
+
         if not response.get("approved"):
+            print("[request_approval] user declined -> short-circuit aggregation")
             return {"approval": {"approved": False}}
+
+        print("[request_approval] user approved")
         return {"approval": response}
+
 
     def dispatch_chunks(_: AnalysisState) -> AnalysisState:
         return {}
