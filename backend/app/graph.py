@@ -70,11 +70,11 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
     def route_dispatch(state: AnalysisState) -> Iterable[Any]:
         approval = state.get("approval")
         if approval and not approval.get("approved", True):
-            return ["aggregate_results"]
+            return ["to_aggregate"]
 
         chunk_inputs = state.get("chunk_inputs", [])
         if not chunk_inputs:
-            return ["aggregate_results"]
+            return ["to_aggregate"]
         sends: list[Any] = [
             Send(
                 "analyze_chunk",
@@ -148,7 +148,7 @@ def build_agent_graph(settings: Settings) -> StateGraph[AnalysisState]:
     builder.add_conditional_edges(
         "dispatch_chunks",
         route_dispatch,
-        path_map={"aggregate_results": "aggregate_results"},
+        path_map={"to_aggregate": "aggregate_results"},
     )
     builder.add_edge("analyze_chunk", "aggregate_results")
     builder.add_edge("aggregate_results", "persist")
