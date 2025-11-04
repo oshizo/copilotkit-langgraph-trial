@@ -18,7 +18,7 @@ export function AnalysisHeader({
     <section className="space-y-4">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">
-          小説分析パイロット
+          小説分析Agent
         </h1>
         <p className="text-sm text-muted-foreground">
           プロジェクトフォルダ内のテキストを読み込み、キャラクターとシーンを抽出します。
